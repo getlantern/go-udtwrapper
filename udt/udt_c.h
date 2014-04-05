@@ -2,6 +2,8 @@
 
 #include "udt_base.h"
 
+// For some reason the name htons isn't addressable in Go, so we have a function
+// that wraps htons and is called _htons, which makes Go happy.
 uint16_t _htons(uint16_t hostshort);
 
 int udt_startup();
