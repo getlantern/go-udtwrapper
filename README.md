@@ -4,7 +4,7 @@ This is a cgo wrapper around the main C++ UDT implementation.
 
 ## Usage
 
-- Godoc: https://godoc.org/github.com/go-udtwrapper/udt
+- Godoc: https://godoc.org/github.com/jbenet/go-udtwrapper/udt
 
 ## Tools:
 
