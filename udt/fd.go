@@ -50,19 +50,16 @@ var udtLock sync.Mutex
 
 // udtFD (wraps udt.socket)
 type udtFD struct {
-	fdmu sync.Mutex
+	fdmu   sync.Mutex
+	refcnt int32
 
 	// immutable until Close
 	sock        C.UDTSOCKET
-	refcnt      int32
 	isClosing   bool
 	isConnected bool
 	net         string
 	laddr       *UDTAddr
 	raddr       *UDTAddr
-}
-
-func sysInit() {
 }
 
 // lastError returns the last error as a Go string.
@@ -148,28 +145,22 @@ func (fd *udtFD) destroy() {
 	runtime.SetFinalizer(fd, nil)
 }
 
-// // Add a reference to this fd.
-// // Returns an error if the fd cannot be used.
-// func (fd *udtFD) incref() error {
-// 	if err := fd.lock(); err != nil {
-// 		return err
-// 	}
-// 	fd.fdmu.Unlock()
-// 	return nil
-// }
+// Add a reference to this fd.
+// Returns an error if the fd cannot be used.
+func (fd *udtFD) incref() {
+	fd.refcnt++
+}
 
-// // Remove a reference to this FD and close if we've been asked to do so
-// // (and there are no references left).
-// func (fd *udtFD) decref() {
-// 	fd.fdmu.Lock()
-// 	if fd.isClosing {
-// 		fd.fdmu.Unlock()
-// 		return
-// 	}
-// 	fd.fdmu.unlock()
-// }
+// Remove a reference to this FD and close if we've been asked to do so
+// (and there are no references left).
+func (fd *udtFD) decref() {
+	fd.refcnt--
+	if fd.isClosing && fd.refcnt == 0 {
+		fd.destroy()
+	}
+}
 
-// Add a reference to this fd and lock for reading.
+// Lock
 // Returns an error if the fd cannot be used.
 func (fd *udtFD) lock() error {
 	fd.fdmu.Lock()
@@ -177,21 +168,32 @@ func (fd *udtFD) lock() error {
 		fd.fdmu.Unlock()
 		return errClosing
 	}
-	fd.refcnt++
 	return nil
 }
 
-// Unlock for reading and remove a reference to this FD.
+// Unlock
 func (fd *udtFD) unlock() {
-	fd.refcnt--
-	if fd.isClosing && fd.refcnt == 0 {
-		fd.destroy()
-	}
 	fd.fdmu.Unlock()
 }
 
-func (fd *udtFD) Close() error {
+// Locks, and adds a reference to this fd
+// Returns an error if the fd cannot be used.
+func (fd *udtFD) lockAndIncref() error {
 	if err := fd.lock(); err != nil {
+		return err
+	}
+	fd.incref()
+	return nil
+}
+
+// Removes a reference and unlocks
+func (fd *udtFD) unlockAndDecref() {
+	fd.decref()
+	fd.unlock()
+}
+
+func (fd *udtFD) Close() error {
+	if err := fd.lockAndIncref(); err != nil {
 		return err
 	}
 
@@ -203,7 +205,7 @@ func (fd *udtFD) Close() error {
 
 	// TODO
 	fd.isClosing = true
-	fd.unlock()
+	fd.unlockAndDecref()
 	return nil
 }
 
