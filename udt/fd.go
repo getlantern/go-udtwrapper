@@ -9,8 +9,6 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
-
-	sockaddr "github.com/jbenet/go-sockaddr"
 )
 
 // #cgo CFLAGS: -Wall
@@ -95,21 +93,103 @@ func (fd *udtFD) name() string {
 	return fd.net + ":" + ls + "->" + rs
 }
 
-func (fd *udtFD) connect(la, ra syscall.Sockaddr) error {
+func socket(laddr *UDTAddr) (C.UDTSOCKET, error) {
+	af, sa, salen, err := laddr.socketArgs()
+	if err != nil {
+		return 0, err
+	}
 
-	// convert the given syscall.Sockaddr to a syscall.RawSockaddrAny
-	// and then to a C.struct_sockaddr_any.
-	rra, ralen, err := sockaddr.SockaddrToAny(ra)
+	udtLock.Lock()
+	sock := C.udt_socket(C.int(af), C.SOCK_STREAM, 0)
+	if sock == C.INVALID_SOCK {
+		err := lastError()
+		udtLock.Unlock()
+		return 0, fmt.Errorf("invalid socket: %s", err)
+	}
+
+	// reduce maximum size
+	if C.udt_setsockopt(sock, 0, C.UDP_RCVBUF, unsafe.Pointer(&UDP_RCVBUF_SIZE), C.sizeof_int) != 0 {
+		err := lastError()
+		udtLock.Unlock()
+		return 0, fmt.Errorf("failed to set rcvbuf: %d, %s", UDP_RCVBUF_SIZE, err)
+	}
+
+	// cast sockaddr
+	csa := (*C.struct_sockaddr)(unsafe.Pointer(sa))
+	if C.udt_bind(sock, csa, C.int(salen)) != 0 {
+		err := lastError()
+		udtLock.Unlock()
+		return 0, fmt.Errorf("failed to bind: %s, %s", laddr, err)
+	}
+	udtLock.Unlock()
+	return sock, nil
+}
+
+func (fd *udtFD) listen(backlog int) error {
+	udtLock.Lock()
+	if C.udt_listen(fd.sock, C.int(backlog)) == C.ERROR {
+		err := lastError()
+		udtLock.Unlock()
+		return fmt.Errorf("error listening: %s", err)
+	}
+	udtLock.Unlock()
+	return nil
+}
+
+// func (fd *udtFD) accept(toAddr func(syscall.Sockaddr) Addr) (netfd *udtFD, err error) {
+// 	if err := fd.readLock(); err != nil {
+// 		return nil, err
+// 	}
+// 	defer fd.readUnlock()
+
+// 	var s int
+// 	var rsa syscall.Sockaddr
+// 	if err = fd.pd.PrepareRead(); err != nil {
+// 		return nil, &net.OpError{"accept", fd.net, fd.laddr, err}
+// 	}
+// 	for {
+// 		s, rsa, err = accept(fd.sysfd)
+// 		if err != nil {
+// 			if err == syscall.EAGAIN {
+// 				if err = fd.pd.WaitRead(); err == nil {
+// 					continue
+// 				}
+// 			} else if err == syscall.ECONNABORTED {
+// 				// This means that a socket on the listen queue was closed
+// 				// before we Accept()ed it; it's a silly error, so try again.
+// 				continue
+// 			}
+// 			return nil, &net.OpError{"accept", fd.net, fd.laddr, err}
+// 		}
+// 		break
+// 	}
+
+// 	if netfd, err = newFD(s, fd.family, fd.sotype, fd.net); err != nil {
+// 		closesocket(s)
+// 		return nil, err
+// 	}
+// 	if err = netfd.init(); err != nil {
+// 		fd.Close()
+// 		return nil, err
+// 	}
+// 	lsa, _ := syscall.Getsockname(netfd.sysfd)
+// 	netfd.setAddr(toAddr(lsa), toAddr(rsa))
+// 	return netfd, nil
+// }
+
+func (fd *udtFD) connect(raddr *UDTAddr) error {
+
+	_, sa, salen, err := raddr.socketArgs()
 	if err != nil {
 		return err
 	}
-	cra := (*C.struct_sockaddr)(unsafe.Pointer(rra))
+	csa := (*C.struct_sockaddr)(unsafe.Pointer(sa))
 
 	udtLock.Lock()
-	if C.udt_connect(fd.sock, cra, C.int(ralen)) == C.ERROR {
+	if C.udt_connect(fd.sock, csa, C.int(salen)) == C.ERROR {
 		err := lastError()
 		udtLock.Unlock()
-		return err
+		return fmt.Errorf("error connecting: %s", err)
 	}
 	udtLock.Unlock()
 
@@ -408,47 +488,6 @@ func (fd *udtFD) Write(p []byte) (nn int, err error) {
 // 	return
 // }
 
-// func (fd *udtFD) accept(toAddr func(syscall.Sockaddr) Addr) (netfd *udtFD, err error) {
-// 	if err := fd.readLock(); err != nil {
-// 		return nil, err
-// 	}
-// 	defer fd.readUnlock()
-
-// 	var s int
-// 	var rsa syscall.Sockaddr
-// 	if err = fd.pd.PrepareRead(); err != nil {
-// 		return nil, &net.OpError{"accept", fd.net, fd.laddr, err}
-// 	}
-// 	for {
-// 		s, rsa, err = accept(fd.sysfd)
-// 		if err != nil {
-// 			if err == syscall.EAGAIN {
-// 				if err = fd.pd.WaitRead(); err == nil {
-// 					continue
-// 				}
-// 			} else if err == syscall.ECONNABORTED {
-// 				// This means that a socket on the listen queue was closed
-// 				// before we Accept()ed it; it's a silly error, so try again.
-// 				continue
-// 			}
-// 			return nil, &net.OpError{"accept", fd.net, fd.laddr, err}
-// 		}
-// 		break
-// 	}
-
-// 	if netfd, err = newFD(s, fd.family, fd.sotype, fd.net); err != nil {
-// 		closesocket(s)
-// 		return nil, err
-// 	}
-// 	if err = netfd.init(); err != nil {
-// 		fd.Close()
-// 		return nil, err
-// 	}
-// 	lsa, _ := syscall.Getsockname(netfd.sysfd)
-// 	netfd.setAddr(toAddr(lsa), toAddr(rsa))
-// 	return netfd, nil
-// }
-
 func (fd *udtFD) LocalAddr() net.Addr {
 	return fd.laddr
 }
@@ -467,36 +506,4 @@ func (fd *udtFD) SetReadDeadline(t time.Time) error {
 
 func (fd *udtFD) SetWriteDeadline(t time.Time) error {
 	panic("not yet implemented")
-}
-
-func socket(laddr *UDTAddr) (C.UDTSOCKET, error) {
-	af, sa, salen, err := laddr.socketArgs()
-	if err != nil {
-		return 0, err
-	}
-
-	udtLock.Lock()
-	sock := C.udt_socket(C.int(af), C.SOCK_STREAM, 0)
-	if sock == C.INVALID_SOCK {
-		err := lastError()
-		udtLock.Unlock()
-		return 0, fmt.Errorf("invalid socket: %s", err)
-	}
-
-	// reduce maximum size
-	if C.udt_setsockopt(sock, 0, C.UDP_RCVBUF, unsafe.Pointer(&UDP_RCVBUF_SIZE), C.sizeof_int) != 0 {
-		err := lastError()
-		udtLock.Unlock()
-		return 0, fmt.Errorf("failed to set rcvbuf: %d, %s", UDP_RCVBUF_SIZE, err)
-	}
-
-	// cast sockaddr
-	csa := (*C.struct_sockaddr)(unsafe.Pointer(sa))
-	if C.udt_bind(sock, csa, C.int(salen)) != 0 {
-		err := lastError()
-		udtLock.Unlock()
-		return 0, fmt.Errorf("failed to bind: %s, %s", laddr, err)
-	}
-	udtLock.Unlock()
-	return sock, nil
 }

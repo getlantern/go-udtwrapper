@@ -21,9 +21,7 @@ func TestResolevUDTAddr(t *testing.T) {
 
 func TestSocketConstruct(t *testing.T) {
 	a, err := ResolveUDTAddr("udt", ":1234")
-	if err != nil {
-		t.Fatal(err)
-	}
+	assert(t, nil == err)
 
 	if _, err := socket(a); err != nil {
 		t.Fatal(err)
@@ -32,13 +30,12 @@ func TestSocketConstruct(t *testing.T) {
 
 func TestSocketClose(t *testing.T) {
 	a, err := ResolveUDTAddr("udt", ":1234")
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	assert(t, nil == err)
 	s, err := socket(a)
-	if err != nil {
-		t.Fatal(err)
+	assert(t, nil == err)
+
+	if int(s) <= 0 {
+		t.Fatal("socket num invalid")
 	}
 
 	if err := closeSocket(s); err != nil {
@@ -52,14 +49,9 @@ func TestSocketClose(t *testing.T) {
 
 func TestUdtFDConstruct(t *testing.T) {
 	a, err := ResolveUDTAddr("udt", ":1234")
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	assert(t, nil == err)
 	s, err := socket(a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	assert(t, nil == err)
 
 	if int(s) <= 0 {
 		t.Fatal("socket num invalid")
@@ -86,19 +78,9 @@ func TestUdtFDConstruct(t *testing.T) {
 
 func TestUdtFDLocking(t *testing.T) {
 	a, err := ResolveUDTAddr("udt", ":1234")
-	if err != nil {
-		t.Fatal(err)
-	}
-
+	assert(t, nil == err)
 	s, err := socket(a)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if int(s) <= 0 {
-		t.Fatal("socket num invalid")
-	}
-
+	assert(t, nil == err)
 	fd := newFD(s, a, "udt")
 
 	if err := fd.lockAndIncref(); err != nil {
@@ -150,5 +132,49 @@ func TestUdtFDLocking(t *testing.T) {
 
 	if int(fd.sock) != -1 {
 		t.Fatal("sock should now be -1")
+	}
+}
+
+func TestUdtFDListenOnly(t *testing.T) {
+	la, err := ResolveUDTAddr("udt", ":1234")
+	assert(t, nil == err)
+	s, err := socket(la)
+	assert(t, nil == err)
+	fd := newFD(s, la, "udt")
+
+	if err := fd.listen(10); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fd.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fd.listen(10); err == nil {
+		t.Fatal("should not be able to listen after closing")
+	}
+}
+
+func TestUdtFDConnect(t *testing.T) {
+	la, err := ResolveUDTAddr("udt", ":1234")
+	assert(t, nil == err)
+	// ra, err := ResolveUDTAddr("udt", "127.0.0.1:2222")
+	// assert(t, nil == err)
+	s, err := socket(la)
+	assert(t, nil == err)
+	fd := newFD(s, la, "udt")
+
+	// if err := fd.connect(ra); err != nil {
+	// 	t.Fatal(err)
+	// }
+
+	if err := fd.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assert(t *testing.T, cond bool, vals ...interface{}) {
+	if !cond {
+		t.Fatal(vals...)
 	}
 }
