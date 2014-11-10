@@ -19,7 +19,30 @@ func slice2cbuf(buf []byte) *C.char {
 	return (*C.char)(unsafe.Pointer(&buf[0]))
 }
 
-func (fd *udtFD) Read(p []byte) (n int, err error) {
+// udtIOError interprets the udt_getlasterror_code and returns an
+// error if IO systems should stop.
+func (fd *udtFD) udtIOError() error {
+	switch C.udt_getlasterror_code() {
+	case C.UDT_ECONNFAIL, C.UDT_ECONNLOST: // connection closed
+	case C.UDT_EASYNCRCV, C.UDT_EASYNCSND: // no data to read (async)
+	case C.UDT_ETIMEOUT: // timeout that we triggered
+	default: // unexpected error, bail
+		return lastError()
+	}
+
+	// timeout and/or closing.
+	if fd.isClosing() {
+		if getSocketStatus(fd.sock).inTeardown() {
+			return io.EOF // it seems to have been a graceful shutdown
+		}
+		return errClosing
+	}
+
+	// everything seems fine. proceed.
+	return nil
+}
+
+func (fd *udtFD) Read(buf []byte) (readcnt int, err error) {
 	if err = fd.lockAndIncref(); err != nil {
 		return 0, err
 	}
@@ -33,28 +56,36 @@ func (fd *udtFD) Read(p []byte) (n int, err error) {
 		}
 	}()
 
-	if getSocketStatus(fd.sock).inTeardown() {
-		return 0, io.EOF
-	}
-
-	n = int(C.udt_recv(fd.sock, slice2cbuf(p), C.int(cap(p)), 0))
-	if C.int(n) == C.ERROR {
-		if getSocketStatus(fd.sock).inTeardown() {
-			err = io.EOF
-		} else {
-			err = fd.lastErrorOp("read")
+	readcnt = 0
+	for {
+		n := int(C.udt_recv(fd.sock, slice2cbuf(buf[readcnt:]), C.int(len(buf)-readcnt), 0))
+		if C.int(n) == C.ERROR {
+			// got problems?
+			if err = fd.udtIOError(); err != nil {
+				break
+			}
+			// nope, everything's fine. read again.
+			continue
 		}
-		// TODO if UDT_DGRAM support is implemented, revisit this logic
-	} else if n == 0 {
-		err = io.EOF
+
+		if n > 0 {
+			readcnt += n
+		}
+		if err != nil { // bad things happened
+			break
+		}
+		if n == 0 {
+			err = io.EOF
+		}
+		break // return the data we have.
 	}
 	if err != nil && err != io.EOF {
 		err = &net.OpError{"read", fd.net, fd.laddr, err}
 	}
-	return n, err
+	return readcnt, err
 }
 
-func (fd *udtFD) Write(buf []byte) (nn int, err error) {
+func (fd *udtFD) Write(buf []byte) (writecnt int, err error) {
 	if err = fd.lockAndIncref(); err != nil {
 		return 0, err
 	}
@@ -68,25 +99,30 @@ func (fd *udtFD) Write(buf []byte) (nn int, err error) {
 		}
 	}()
 
-	nn = 0
-	n := 0
+	writecnt = 0
 	for {
-		n = int(C.udt_send(fd.sock, slice2cbuf(buf[n:]), C.int(len(buf[n:])), 0))
+		n := int(C.udt_send(fd.sock, slice2cbuf(buf[writecnt:]), C.int(len(buf)-writecnt), 0))
+
 		if C.int(n) == C.ERROR {
-			err = lastError()
-			break
+			// UDT Error?
+			if err = fd.udtIOError(); err != nil {
+				break
+			}
+			// everything's fine, proceed
 		}
+
+		// update our running count
 		if n > 0 {
-			nn += n
+			writecnt += n
 		}
-		if nn == len(buf) {
+
+		if writecnt == len(buf) { // done!
 			break
 		}
-		if err != nil {
-			n = 0
+		if err != nil { // bad things happened
 			break
 		}
-		if n == 0 {
+		if n == 0 { // early eof?
 			err = io.ErrUnexpectedEOF
 			break
 		}
@@ -94,7 +130,7 @@ func (fd *udtFD) Write(buf []byte) (nn int, err error) {
 	if err != nil {
 		err = &net.OpError{"write", fd.net, fd.raddr, err}
 	}
-	return nn, err
+	return writecnt, err
 }
 
 type socketStatus C.enum_UDTSTATUS

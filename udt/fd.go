@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"runtime"
 	"sync"
 	"syscall"
@@ -23,8 +24,18 @@ import "C"
 // returned when calling functions on a fd that's closing.
 var errClosing = errors.New("file descriptor closing")
 
-// UDP_RCVBUF_SIZE is the default UDP_RCVBUF size.
-var UDP_RCVBUF_SIZE = uint32(20971520) // 20MB
+var (
+	// UDP_RCVBUF_SIZE is the default UDP_RCVBUF size.
+	UDP_RCVBUF_SIZE = uint32(20971520) // 20MB
+
+	// UDT_SNDTIMEO is the udt_send() timeout in milliseconds
+	// note this doesnt change the interface, we use it as a poor polling
+	UDT_SNDTIMEO_MS = C.int(300)
+
+	// UDT_RCVTIMEO is the udt_recv() timeout in milliseconds
+	// note this doesnt change the interface, we use it as a poor polling
+	UDT_RCVTIMEO_MS = C.int(300)
+)
 
 func init() {
 	// adjust the rcvbuf to our max.
@@ -91,11 +102,19 @@ func (fd *udtFD) setDefaultOpts() error {
 		return fmt.Errorf("failed to set UDT_REUSEADDR: %s", lastError())
 	}
 
-	// set UDT_LINGER
+	// unset UDT_LINGER
 	// falseint := C.int(0)
 	// if C.udt_setsockopt(fd.sock, 0, C.UDT_LINGER, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
 	// 	return fmt.Errorf("failed to set UDT_LINGER: %s", lastError())
 	// }
+
+	if C.udt_setsockopt(fd.sock, 0, C.UDT_RCVTIMEO, unsafe.Pointer(&UDT_RCVTIMEO_MS), C.sizeof_int) != 0 {
+		return fmt.Errorf("failed to set UDT_RCVTIMEO: %s", lastError())
+	}
+
+	if C.udt_setsockopt(fd.sock, 0, C.UDT_SNDTIMEO, unsafe.Pointer(&UDT_SNDTIMEO_MS), C.sizeof_int) != 0 {
+		return fmt.Errorf("failed to set UDT_SNDTIMEO: %s", lastError())
+	}
 
 	return nil
 }
