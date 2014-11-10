@@ -136,7 +136,7 @@ func TestUdtFDLocking(t *testing.T) {
 }
 
 func TestUdtFDListenOnly(t *testing.T) {
-	la, err := ResolveUDTAddr("udt", ":1234")
+	la, err := ResolveUDTAddr("udt", ":1235")
 	assert(t, nil == err)
 	s, err := socket(la)
 	assert(t, nil == err)
@@ -145,6 +145,29 @@ func TestUdtFDListenOnly(t *testing.T) {
 	if err := fd.listen(10); err != nil {
 		t.Fatal(err)
 	}
+
+	if err := fd.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fd.listen(10); err == nil {
+		t.Fatal("should not be able to listen after closing")
+	}
+}
+
+func TestUdtFDAccept(t *testing.T) {
+	la, err := ResolveUDTAddr("udt", ":1234")
+	assert(t, nil == err, err)
+	s, err := socket(la)
+	assert(t, nil == err, err)
+	fd := newFD(s, la, "udt")
+	err = fd.listen(10)
+	assert(t, nil == err, err)
+
+	// c, err := fd.accept()
+	// if err != nil {
+	// 	t.Fatal(err)
+	// }
 
 	if err := fd.Close(); err != nil {
 		t.Fatal(err)

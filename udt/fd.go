@@ -137,9 +137,14 @@ func socket(laddr *UDTAddr) (sock C.UDTSOCKET, reterr error) {
 		return
 	}
 
-	// set SO_REUSEADDR
-	if C.udt_setsockopt(sock, 0, C.SO_REUSEADDR, unsafe.Pointer(&trueint), C.sizeof_int) != 0 {
-		reterr = fmt.Errorf("failed to set SO_REUSEADDR: %s", lastError())
+	// set UDT_REUSEADDR
+	if C.udt_setsockopt(sock, 0, C.UDT_REUSEADDR, unsafe.Pointer(&trueint), C.sizeof_int) != 0 {
+		reterr = fmt.Errorf("failed to set UDT_REUSEADDR: %s", lastError())
+	}
+
+	// set UDT_LINGER
+	if C.udt_setsockopt(sock, 0, C.UDT_LINGER, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
+		reterr = fmt.Errorf("failed to set UDT_LINGER: %s", lastError())
 	}
 
 	// cast sockaddr
