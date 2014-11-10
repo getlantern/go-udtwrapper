@@ -80,24 +80,22 @@ func (fd *udtFD) name() string {
 
 func (fd *udtFD) setDefaultOpts() error {
 
-	// options
-	trueint := C.int(1)
-	falseint := C.int(0)
-
 	// reduce maximum size
 	if C.udt_setsockopt(fd.sock, 0, C.UDP_RCVBUF, unsafe.Pointer(&UDP_RCVBUF_SIZE), C.sizeof_int) != 0 {
 		return fmt.Errorf("failed to set UDP_RCVBUF: %d, %s", UDP_RCVBUF_SIZE, lastError())
 	}
 
 	// set UDT_REUSEADDR
+	trueint := C.int(1)
 	if C.udt_setsockopt(fd.sock, 0, C.UDT_REUSEADDR, unsafe.Pointer(&trueint), C.sizeof_int) != 0 {
 		return fmt.Errorf("failed to set UDT_REUSEADDR: %s", lastError())
 	}
 
 	// set UDT_LINGER
-	if C.udt_setsockopt(fd.sock, 0, C.UDT_LINGER, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
-		return fmt.Errorf("failed to set UDT_LINGER: %s", lastError())
-	}
+	// falseint := C.int(0)
+	// if C.udt_setsockopt(fd.sock, 0, C.UDT_LINGER, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
+	// 	return fmt.Errorf("failed to set UDT_LINGER: %s", lastError())
+	// }
 
 	return nil
 }

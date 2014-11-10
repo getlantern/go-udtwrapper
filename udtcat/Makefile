@@ -6,7 +6,7 @@ trash=.trash/
 
 all: udtcat
 
-test: clean udtcat ${tests}
+test: clean deps ${tests}
 	@echo ${tests}
 	@echo "*** tests passed ***"
 
