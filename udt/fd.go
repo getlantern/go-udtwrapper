@@ -74,13 +74,6 @@ func newFD(sock C.UDTSOCKET, laddr, raddr *UDTAddr, net string) (*udtFD, error) 
 	return fd, nil
 }
 
-// lastError returns the last error as a Go string.
-// caller should be holding udtLock, or errors may be reported
-// incorrectly...
-func lastError() error {
-	return errors.New(C.GoString(C.udt_getlasterror_desc()))
-}
-
 // lastErrorOp returns the last error as a net.OpError.
 // caller should be holding udtLock, or errors may be reported
 // incorrectly...
@@ -97,20 +90,6 @@ func (fd *udtFD) name() string {
 		rs = fd.raddr.String()
 	}
 	return fd.net + ":" + ls + "->" + rs
-}
-
-func socket(addrfamily int) (sock C.UDTSOCKET, reterr error) {
-
-	// lock + teardown.
-	udtLock.Lock()
-	defer udtLock.Unlock()
-
-	sock = C.udt_socket(C.int(addrfamily), C.SOCK_STREAM, 0)
-	if sock == C.INVALID_SOCK {
-		return C.INVALID_SOCK, fmt.Errorf("invalid socket: %s", lastError())
-	}
-
-	return sock, nil
 }
 
 func (fd *udtFD) setDefaultOpts() error {
@@ -357,17 +336,7 @@ func (fd *udtFD) Close() error {
 // 	return nil
 // }
 
-func closeSocket(sock C.UDTSOCKET, locked bool) error {
-	if !locked {
-		udtLock.Lock()
-		defer udtLock.Unlock()
-	}
-
-	if C.udt_close(sock) == C.ERROR {
-		return lastError()
-	}
-	return nil
-}
+// net.Conn functions
 
 func (fd *udtFD) LocalAddr() net.Addr {
 	return fd.laddr
@@ -387,4 +356,37 @@ func (fd *udtFD) SetReadDeadline(t time.Time) error {
 
 func (fd *udtFD) SetWriteDeadline(t time.Time) error {
 	panic("not yet implemented")
+}
+
+// lastError returns the last error as a Go string.
+// caller should be holding udtLock, or errors may be reported
+// incorrectly...
+func lastError() error {
+	return errors.New(C.GoString(C.udt_getlasterror_desc()))
+}
+
+func socket(addrfamily int) (sock C.UDTSOCKET, reterr error) {
+
+	// lock + teardown.
+	udtLock.Lock()
+	defer udtLock.Unlock()
+
+	sock = C.udt_socket(C.int(addrfamily), C.SOCK_STREAM, 0)
+	if sock == C.INVALID_SOCK {
+		return C.INVALID_SOCK, fmt.Errorf("invalid socket: %s", lastError())
+	}
+
+	return sock, nil
+}
+
+func closeSocket(sock C.UDTSOCKET, locked bool) error {
+	if !locked {
+		udtLock.Lock()
+		defer udtLock.Unlock()
+	}
+
+	if C.udt_close(sock) == C.ERROR {
+		return lastError()
+	}
+	return nil
 }
