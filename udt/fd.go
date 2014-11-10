@@ -390,3 +390,82 @@ func closeSocket(sock C.UDTSOCKET, locked bool) error {
 	}
 	return nil
 }
+
+// dialFD sets up a udtFD
+func dialFD(laddr, raddr *UDTAddr) (*udtFD, error) {
+
+	if raddr == nil {
+		return nil, &net.OpError{"dial", "udt", raddr, errors.New("invalid remote address")}
+	}
+
+	if laddr != nil && laddr.AF() != raddr.AF() {
+		return nil, &net.OpError{"dial", "udt", raddr, errors.New("differing remote address network")}
+	}
+
+	sock, err := socket(raddr.AF())
+	if err != nil {
+		return nil, err
+	}
+
+	fd, err := newFD(sock, laddr, raddr, "udt")
+	if err != nil {
+		closeSocket(sock, false)
+		return nil, err
+	}
+
+	if err := fd.setDefaultOpts(); err != nil {
+		fd.Close()
+		return nil, err
+	}
+
+	if laddr != nil {
+		if err := fd.bind(); err != nil {
+			fd.Close()
+			return nil, err
+		}
+	}
+
+	if err := fd.connect(raddr); err != nil {
+		fd.Close()
+		return nil, err
+	}
+
+	return fd, nil
+}
+
+// listenFD sets up a udtFD
+func listenFD(laddr *UDTAddr) (*udtFD, error) {
+
+	if laddr == nil {
+		return nil, &net.OpError{"dial", "udt", nil, errors.New("invalid address")}
+	}
+
+	sock, err := socket(laddr.AF())
+	if err != nil {
+		return nil, err
+	}
+
+	fd, err := newFD(sock, laddr, nil, "udt")
+	if err != nil {
+		closeSocket(sock, false)
+		return nil, err
+	}
+
+	if err := fd.setDefaultOpts(); err != nil {
+		fd.Close()
+		return nil, err
+	}
+
+	if err := fd.bind(); err != nil {
+		fd.Close()
+		return nil, err
+	}
+
+	// TODO: use maxListenerBacklog like golang.org/net/
+	if err := fd.listen(syscall.SOMAXCONN); err != nil {
+		fd.Close()
+		return nil, err
+	}
+
+	return fd, nil
+}

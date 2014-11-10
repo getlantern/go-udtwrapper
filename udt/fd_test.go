@@ -240,6 +240,126 @@ func TestUdtFDAcceptAndConnect(t *testing.T) {
 	}
 }
 
+func TestUdtFDAcceptAndDialFD(t *testing.T) {
+	al, err := ResolveUDTAddr("udt", "127.0.0.1:1334")
+	assert(t, nil == err, err)
+	sl, err := socket(al.AF())
+	assert(t, nil == err, err)
+	fdl, err := newFD(sl, al, nil, "udt")
+	assert(t, nil == err, err)
+	err = fdl.setDefaultOpts()
+	assert(t, nil == err, err)
+	err = fdl.bind()
+	assert(t, nil == err, err)
+	err = fdl.listen(10)
+	assert(t, nil == err, err)
+
+	cerrs := make(chan error, 10)
+	go func() {
+		fdc, err := dialFD(nil, al)
+		if err != nil {
+			fmt.Printf("failed to dial %s", err)
+			cerrs <- err
+			return
+		}
+
+		if fdc.raddr != al {
+			cerrs <- fmt.Errorf("addr should be set (todo change)")
+		}
+
+		cerrs <- fdc.Close()
+
+		if err := fdc.connect(al); err == nil {
+			cerrs <- fmt.Errorf("should not be able to connect after closing")
+		}
+
+		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
+		assert(t, fdc.Close() != nil, "closing twice should be an error")
+		close(cerrs)
+	}()
+
+	connl, err := fdl.accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if connl.sock <= 0 {
+		t.Fatal("sock <= 0", connl.sock)
+	}
+
+	if err := fdl.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
+	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
+	assert(t, fdl.Close() != nil, "closing twice should be an error")
+
+	// drain connector errs
+	for err := range cerrs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestUdtDialFDAndListenFD(t *testing.T) {
+	al, err := ResolveUDTAddr("udt", "127.0.0.1:1434")
+	assert(t, nil == err, err)
+
+	cerrs := make(chan error, 10)
+	go func() {
+		fdc, err := dialFD(nil, al)
+		if err != nil {
+			cerrs <- err
+			return
+		}
+
+		if fdc.raddr != al {
+			cerrs <- fmt.Errorf("addr should be set (todo change)")
+		}
+
+		cerrs <- fdc.Close()
+
+		if err := fdc.connect(al); err == nil {
+			cerrs <- fmt.Errorf("should not be able to connect after closing")
+		}
+
+		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
+		assert(t, fdc.Close() != nil, "closing twice should be an error")
+		close(cerrs)
+	}()
+
+	fdl, err := listenFD(al)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	connl, err := fdl.accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if connl.sock <= 0 {
+		t.Fatal("sock <= 0", connl.sock)
+	}
+
+	if err := fdl.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
+	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
+	assert(t, fdl.Close() != nil, "closing twice should be an error")
+
+	// drain connector errs
+	for err := range cerrs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func assert(t *testing.T, cond bool, vals ...interface{}) {
 	if !cond {
 		t.Fatal(vals...)
