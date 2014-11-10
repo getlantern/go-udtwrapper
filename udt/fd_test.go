@@ -4,24 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"syscall"
 	"testing"
 )
-
-func TestResolevUDTAddr(t *testing.T) {
-	a, err := ResolveUDTAddr("udt", ":1234")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if a.Network() != "udt" {
-		t.Fatal("addr resolved incorrectly: %s", a.Network())
-	}
-
-	if a.String() != ":1234" {
-		t.Fatal("addr resolved incorrectly: %s", a)
-	}
-}
 
 func TestSocketConstruct(t *testing.T) {
 	if _, err := socket(syscall.AF_INET); err != nil {
@@ -196,6 +182,8 @@ func TestUdtFDAcceptAndConnect(t *testing.T) {
 
 	cerrs := make(chan error, 10)
 	go func() {
+		defer close(cerrs)
+
 		err := fdc.connect(al)
 		if err != nil {
 			cerrs <- err
@@ -214,7 +202,6 @@ func TestUdtFDAcceptAndConnect(t *testing.T) {
 
 		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
 		assert(t, fdc.Close() != nil, "closing twice should be an error")
-		close(cerrs)
 	}()
 
 	connl, err := fdl.accept()
@@ -258,6 +245,8 @@ func TestUdtFDAcceptAndDialFD(t *testing.T) {
 
 	cerrs := make(chan error, 10)
 	go func() {
+		defer close(cerrs)
+
 		fdc, err := dialFD(nil, al)
 		if err != nil {
 			fmt.Printf("failed to dial %s", err)
@@ -277,7 +266,6 @@ func TestUdtFDAcceptAndDialFD(t *testing.T) {
 
 		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
 		assert(t, fdc.Close() != nil, "closing twice should be an error")
-		close(cerrs)
 	}()
 
 	connl, err := fdl.accept()
@@ -311,6 +299,7 @@ func TestUdtDialFDAndListenFD(t *testing.T) {
 
 	cerrs := make(chan error, 10)
 	go func() {
+		defer close(cerrs)
 		fdc, err := dialFD(nil, al)
 		if err != nil {
 			cerrs <- err
@@ -329,7 +318,6 @@ func TestUdtDialFDAndListenFD(t *testing.T) {
 
 		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
 		assert(t, fdc.Close() != nil, "closing twice should be an error")
-		close(cerrs)
 	}()
 
 	fdl, err := listenFD(al)
@@ -345,6 +333,9 @@ func TestUdtDialFDAndListenFD(t *testing.T) {
 	if connl.sock <= 0 {
 		t.Fatal("sock <= 0", connl.sock)
 	}
+
+	err = connl.Close()
+	assert(t, nil == err, err)
 
 	if err := fdl.Close(); err != nil {
 		t.Fatal(err)
@@ -368,6 +359,7 @@ func TestUdtReadWrite(t *testing.T) {
 
 	cerrs := make(chan error, 10)
 	go func() {
+		defer close(cerrs)
 		fdc, err := dialFD(nil, al)
 		assert(t, nil == err, err)
 
@@ -376,7 +368,6 @@ func TestUdtReadWrite(t *testing.T) {
 		if err != nil {
 			cerrs <- err
 		}
-		close(cerrs)
 	}()
 
 	fdl, err := listenFD(al)
@@ -385,45 +376,7 @@ func TestUdtReadWrite(t *testing.T) {
 	connl, err := fdl.accept()
 	assert(t, nil == err, err)
 
-	// the meat of the test is here vvv
-
-	buflen := 1024 * 128
-	buf := make([]byte, buflen)
-	for i := 0; i < 128; i++ {
-
-		for j := range buf {
-			buf[j] = byte('a' + (i % 26))
-		}
-
-		fmt.Printf("sending %d - %d", buflen, i)
-		for n, nn := 0, 0; n < buflen; n += nn {
-			nn, err = connl.Write(buf[n:])
-			fmt.Printf(".")
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-		fmt.Printf("\n")
-
-		fmt.Printf("receiving %d - %d ", buflen, i)
-		buf2 := make([]byte, buflen)
-		for n, nn := 0, 0; n < buflen; n += nn {
-			nn, err = connl.Read(buf2[n:])
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		if !bytes.Equal(buf, buf2) {
-			t.Fatal("bufs differ:\n\n%s\n\n%s", string(buf), string(buf2))
-		}
-
-		fmt.Printf("ok\n")
-	}
-
-	// the meat of the test is here ^^^
+	testSendToEcho(t, connl)
 
 	err = connl.Close()
 	assert(t, nil == err, err)
@@ -449,4 +402,48 @@ func assert(t *testing.T, cond bool, vals ...interface{}) {
 	if !cond {
 		t.Fatal(vals...)
 	}
+}
+
+func testSendToEcho(t *testing.T, conn net.Conn) {
+
+	// the meat of the test is here vvv
+
+	buflen := 1024 * 12
+	buf := make([]byte, buflen)
+	for i := 0; i < 128; i++ {
+
+		for j := range buf {
+			buf[j] = byte('a' + (i % 26))
+		}
+
+		var err error
+		fmt.Printf("sending %d - %d", buflen, i)
+		for n, nn := 0, 0; n < buflen; n += nn {
+			nn, err = conn.Write(buf[n:])
+			fmt.Printf(".")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		fmt.Printf("\n")
+
+		fmt.Printf("receiving %d - %d ", buflen, i)
+		buf2 := make([]byte, buflen)
+		for n, nn := 0, 0; n < buflen; n += nn {
+			nn, err = conn.Read(buf2[n:])
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if !bytes.Equal(buf, buf2) {
+			t.Fatal("bufs differ:\n\n%s\n\n%s", string(buf), string(buf2))
+		}
+
+		fmt.Printf("ok\n")
+	}
+
+	// the meat of the test is here ^^^
 }

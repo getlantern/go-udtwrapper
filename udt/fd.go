@@ -71,7 +71,9 @@ type udtFD struct {
 }
 
 func newFD(sock C.UDTSOCKET, laddr, raddr *UDTAddr, net string) (*udtFD, error) {
-	fd := &udtFD{sock: sock, laddr: laddr, raddr: raddr, net: net}
+	lac := laddr.copy()
+	rac := raddr.copy()
+	fd := &udtFD{sock: sock, laddr: lac, raddr: rac, net: net}
 	runtime.SetFinalizer(fd, (*udtFD).Close)
 	return fd, nil
 }

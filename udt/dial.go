@@ -22,18 +22,13 @@ func (d *Dialer) DialUDT(network string, raddr *UDTAddr) (*UDTConn, error) {
 	if raddr == nil {
 		return nil, &net.OpError{Op: "dial", Net: network, Addr: nil, Err: errMissingAddress}
 	}
-	laddr := d.LocalAddr
-	if laddr == nil {
-		laddr = &UDTAddr{addr: &net.UDPAddr{}}
+
+	laddr, ok := d.LocalAddr.(*UDTAddr)
+	if !ok {
+		laddr = nil
 	}
 
-	panic("not implemented yet")
-	// c, er := dial(laddr, raddr)
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// c.net = network
-	// return c
+	return dialConn(laddr, raddr)
 }
 
 // Dial connects to the remote address raddr on the network net,

@@ -10,7 +10,7 @@ import (
 )
 
 type UDTAddr struct {
-	addr net.Addr
+	addr *net.UDPAddr
 }
 
 func (a *UDTAddr) Network() string { return "udt" }
@@ -27,6 +27,16 @@ func (a *UDTAddr) toAddr() net.Addr {
 		return nil
 	}
 	return a.addr
+}
+
+func (a *UDTAddr) copy() *UDTAddr {
+	if a == nil || a.addr == nil {
+		return nil
+	}
+
+	var udp net.UDPAddr
+	udp = *a.addr
+	return &UDTAddr{addr: &udp}
 }
 
 // AF returns UDTAddr's AF (Address Family)

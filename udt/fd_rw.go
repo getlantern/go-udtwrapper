@@ -71,7 +71,6 @@ func (fd *udtFD) Write(buf []byte) (n int, err error) {
 		}
 	}
 
-	// fmt.Printf("> WRITE: %d %s\n", n, buf[:n])
 	return n, nil
 }
 
