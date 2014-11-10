@@ -1,6 +1,8 @@
 package udt
 
 import (
+	"fmt"
+	"syscall"
 	"testing"
 )
 
@@ -20,19 +22,14 @@ func TestResolevUDTAddr(t *testing.T) {
 }
 
 func TestSocketConstruct(t *testing.T) {
-	a, err := ResolveUDTAddr("udt", ":1234")
-	assert(t, nil == err)
-
-	if _, err := socket(a); err != nil {
+	if _, err := socket(syscall.AF_INET); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestSocketClose(t *testing.T) {
-	a, err := ResolveUDTAddr("udt", ":1234")
-	assert(t, nil == err)
-	s, err := socket(a)
-	assert(t, nil == err)
+	s, err := socket(syscall.AF_INET)
+	assert(t, nil == err, err)
 
 	if int(s) <= 0 {
 		t.Fatal("socket num invalid")
@@ -49,15 +46,22 @@ func TestSocketClose(t *testing.T) {
 
 func TestUdtFDConstruct(t *testing.T) {
 	a, err := ResolveUDTAddr("udt", ":1234")
-	assert(t, nil == err)
-	s, err := socket(a)
-	assert(t, nil == err)
+	assert(t, nil == err, err)
+	s, err := socket(a.AF())
+	assert(t, nil == err, err)
 
 	if int(s) <= 0 {
 		t.Fatal("socket num invalid")
 	}
 
-	fd := newFD(s, a, "udt")
+	fd, err := newFD(s, a, nil, "udt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fd.setDefaultOpts(); err != nil {
+		t.Fatal(err)
+	}
 
 	if fd.name() != "udt::1234->" {
 		t.Fatal("incorrect name:", fd.name())
@@ -78,10 +82,13 @@ func TestUdtFDConstruct(t *testing.T) {
 
 func TestUdtFDLocking(t *testing.T) {
 	a, err := ResolveUDTAddr("udt", ":1234")
-	assert(t, nil == err)
-	s, err := socket(a)
-	assert(t, nil == err)
-	fd := newFD(s, a, "udt")
+	assert(t, nil == err, err)
+	s, err := socket(a.AF())
+	assert(t, nil == err, err)
+	fd, err := newFD(s, a, nil, "udt")
+	assert(t, nil == err, err)
+	err = fd.setDefaultOpts()
+	assert(t, nil == err, err)
 
 	if err := fd.lockAndIncref(); err != nil {
 		t.Fatal(err)
@@ -137,10 +144,21 @@ func TestUdtFDLocking(t *testing.T) {
 
 func TestUdtFDListenOnly(t *testing.T) {
 	la, err := ResolveUDTAddr("udt", ":1235")
-	assert(t, nil == err)
-	s, err := socket(la)
-	assert(t, nil == err)
-	fd := newFD(s, la, "udt")
+	assert(t, nil == err, err)
+	s, err := socket(la.AF())
+	assert(t, nil == err, err)
+	fd, err := newFD(s, la, nil, "udt")
+	assert(t, nil == err, err)
+	err = fd.setDefaultOpts()
+	assert(t, nil == err, err)
+
+	if err := fd.listen(10); err == nil {
+		t.Fatal("should fail. must bind first")
+	}
+
+	if err := fd.bind(); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := fd.listen(10); err != nil {
 		t.Fatal(err)
@@ -150,49 +168,75 @@ func TestUdtFDListenOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := fd.listen(10); err == nil {
-		t.Fatal("should not be able to listen after closing")
-	}
+	assert(t, fd.sock == -1, "sock should now be -1", fd.sock)
+	assert(t, fd.Close() != nil, "closing twice should be an error")
 }
 
-func TestUdtFDAccept(t *testing.T) {
-	la, err := ResolveUDTAddr("udt", ":1234")
+func TestUdtFDAcceptAndConnect(t *testing.T) {
+	al, err := ResolveUDTAddr("udt", "127.0.0.1:1234")
 	assert(t, nil == err, err)
-	s, err := socket(la)
+	sl, err := socket(al.AF())
 	assert(t, nil == err, err)
-	fd := newFD(s, la, "udt")
-	err = fd.listen(10)
+	sc, err := socket(al.AF())
+	assert(t, nil == err, err)
+	fdl, err := newFD(sl, al, nil, "udt")
+	assert(t, nil == err, err)
+	fdc, err := newFD(sc, nil, nil, "udt")
+	assert(t, nil == err, err)
+	err = fdl.setDefaultOpts()
+	assert(t, nil == err, err)
+	err = fdc.setDefaultOpts()
+	assert(t, nil == err, err)
+	err = fdl.bind()
+	assert(t, nil == err, err)
+	err = fdl.listen(10)
 	assert(t, nil == err, err)
 
-	// c, err := fd.accept()
-	// if err != nil {
-	// 	t.Fatal(err)
-	// }
+	cerrs := make(chan error, 10)
+	go func() {
+		err := fdc.connect(al)
+		if err != nil {
+			cerrs <- err
+			return
+		}
 
-	if err := fd.Close(); err != nil {
+		if fdc.raddr != al {
+			cerrs <- fmt.Errorf("addr should be set (todo change)")
+		}
+
+		cerrs <- fdc.Close()
+
+		if err := fdc.connect(al); err == nil {
+			cerrs <- fmt.Errorf("should not be able to connect after closing")
+		}
+
+		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
+		assert(t, fdc.Close() != nil, "closing twice should be an error")
+		close(cerrs)
+	}()
+
+	connl, err := fdl.accept()
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := fd.listen(10); err == nil {
-		t.Fatal("should not be able to listen after closing")
+	if connl.sock <= 0 {
+		t.Fatal("sock <= 0", connl.sock)
 	}
-}
 
-func TestUdtFDConnect(t *testing.T) {
-	la, err := ResolveUDTAddr("udt", ":1234")
-	assert(t, nil == err)
-	// ra, err := ResolveUDTAddr("udt", "127.0.0.1:2222")
-	// assert(t, nil == err)
-	s, err := socket(la)
-	assert(t, nil == err)
-	fd := newFD(s, la, "udt")
-
-	// if err := fd.connect(ra); err != nil {
-	// 	t.Fatal(err)
-	// }
-
-	if err := fd.Close(); err != nil {
+	if err := fdl.Close(); err != nil {
 		t.Fatal(err)
+	}
+
+	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
+	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
+	assert(t, fdl.Close() != nil, "closing twice should be an error")
+
+	// drain connector errs
+	for err := range cerrs {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

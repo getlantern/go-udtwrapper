@@ -31,7 +31,11 @@ func (a *UDTAddr) toAddr() net.Addr {
 
 // AF returns UDTAddr's AF (Address Family)
 func (a *UDTAddr) AF() int {
-	return sockaddrnet.NetAddrAF(a.addr)
+	af := sockaddrnet.NetAddrAF(a.addr)
+	if af == syscall.AF_UNSPEC {
+		af = syscall.AF_INET
+	}
+	return af
 }
 
 // IPPROTO returns UDTAddr's IPPROTO (IPPROTO_UDP)
@@ -67,13 +71,9 @@ func ResolveUDTAddr(n, addr string) (*UDTAddr, error) {
 // sockArgs returns (AF, *RawSockaddrAny, error)
 func (a *UDTAddr) socketArgs() (int, *syscall.RawSockaddrAny, sockaddr.Socklen, error) {
 	af := a.AF()
-	if af == syscall.AF_UNSPEC {
-		af = syscall.AF_INET
-	}
-
 	sa := sockaddrnet.NetAddrToSockaddr(a.addr)
 	if sa == nil {
-		return 0, nil, 0, fmt.Errorf("could not convert net.Addr to syscall.Sockaddr")
+		return 0, nil, 0, fmt.Errorf("could not convert UDPAddr to syscall.Sockaddr")
 	}
 
 	rsa, salen, err := sockaddr.SockaddrToAny(sa)
@@ -82,4 +82,17 @@ func (a *UDTAddr) socketArgs() (int, *syscall.RawSockaddrAny, sockaddr.Socklen, 
 	}
 
 	return af, rsa, salen, nil
+}
+
+func addrWithSockaddr(rsa *syscall.RawSockaddrAny) (*UDTAddr, error) {
+	sa, err := sockaddr.AnyToSockaddr(rsa)
+	if err != nil {
+		return nil, err
+	}
+
+	udpaddr := sockaddrnet.SockaddrToUDPAddr(sa)
+	if udpaddr == nil {
+		return nil, fmt.Errorf("could not convert syscall.Sockaddr to UDPAddr")
+	}
+	return &UDTAddr{addr: udpaddr}, nil
 }
