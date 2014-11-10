@@ -56,6 +56,8 @@ func (*polyamorous) Unlock() {}
 // udtFD (wraps udt.socket)
 type udtFD struct {
 	fdmu   sync.Mutex
+	fdmuR  sync.Mutex
+	fdmuW  sync.Mutex
 	refcnt int32
 	bound  bool
 
@@ -121,6 +123,7 @@ func (fd *udtFD) setDefaultOpts() error {
 }
 
 func (fd *udtFD) setAsyncOpts() error {
+	return fmt.Errorf("async disabled")
 
 	// lock + teardown.
 	udtLock.Lock()
@@ -201,10 +204,10 @@ func (fd *udtFD) accept() (*udtFD, error) {
 		return nil, err
 	}
 
-	if err = remotefd.setAsyncOpts(); err != nil {
-		remotefd.Close()
-		return nil, err
-	}
+	// if err = remotefd.setAsyncOpts(); err != nil {
+	// 	remotefd.Close()
+	// 	return nil, err
+	// }
 
 	return remotefd, nil
 }
@@ -226,7 +229,8 @@ func (fd *udtFD) connect(raddr *UDTAddr) error {
 
 	fd.raddr = raddr
 	udtLock.Unlock()
-	return fd.setAsyncOpts()
+	// return fd.setAsyncOpts()
+	return nil
 
 	// for {
 	// 	// TODO: replace this with proper net waiting on a Write.
