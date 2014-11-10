@@ -47,7 +47,7 @@ type udtFD struct {
 
 	// immutable until Close
 	sock        C.UDTSOCKET
-	isClosing   bool
+	localClose  bool
 	isConnected bool
 	net         string
 	laddr       *UDTAddr
@@ -211,7 +211,7 @@ func (fd *udtFD) incref() {
 // (and there are no references left).
 func (fd *udtFD) decref() {
 	fd.refcnt--
-	if fd.isClosing && fd.refcnt == 0 {
+	if fd.isClosing() && fd.refcnt == 0 {
 		fd.destroy()
 	}
 }
@@ -220,7 +220,7 @@ func (fd *udtFD) decref() {
 // Returns an error if the fd cannot be used.
 func (fd *udtFD) lock() error {
 	fd.fdmu.Lock()
-	if fd.isClosing {
+	if fd.isClosing() {
 		fd.fdmu.Unlock()
 		return errClosing
 	}
@@ -248,6 +248,10 @@ func (fd *udtFD) unlockAndDecref() {
 	fd.unlock()
 }
 
+func (fd *udtFD) isClosing() bool {
+	return fd.localClose || getSocketStatus(fd.sock).inTeardown()
+}
+
 func (fd *udtFD) Close() error {
 	if err := fd.lockAndIncref(); err != nil {
 		return err
@@ -260,7 +264,7 @@ func (fd *udtFD) Close() error {
 	// attempts to block in the pollDesc will return errClosing.
 
 	// TODO
-	fd.isClosing = true
+	fd.localClose = true
 	fd.unlockAndDecref()
 	return nil
 }

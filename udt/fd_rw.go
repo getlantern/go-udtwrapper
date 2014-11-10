@@ -2,6 +2,7 @@ package udt
 
 import (
 	"io"
+	"net"
 	"unsafe"
 )
 
@@ -27,8 +28,9 @@ func (fd *udtFD) Read(p []byte) (n int, err error) {
 
 	defer func() {
 		fd.fdmuR.Unlock()
-		fd.lock()
-		fd.unlockAndDecref()
+		if fd.lock() == nil {
+			fd.unlockAndDecref()
+		}
 	}()
 
 	if getSocketStatus(fd.sock).inTeardown() {
@@ -38,14 +40,21 @@ func (fd *udtFD) Read(p []byte) (n int, err error) {
 	n = int(C.udt_recv(fd.sock, slice2cbuf(p), C.int(cap(p)), 0))
 	if C.int(n) == C.ERROR {
 		if getSocketStatus(fd.sock).inTeardown() {
-			return 0, io.EOF
+			err = io.EOF
+		} else {
+			err = fd.lastErrorOp("read")
 		}
-		return 0, fd.lastErrorOp("read")
+		// TODO if UDT_DGRAM support is implemented, revisit this logic
+	} else if n == 0 {
+		err = io.EOF
 	}
-	return n, nil
+	if err != nil && err != io.EOF {
+		err = &net.OpError{"read", fd.net, fd.laddr, err}
+	}
+	return n, err
 }
 
-func (fd *udtFD) Write(buf []byte) (n int, err error) {
+func (fd *udtFD) Write(buf []byte) (nn int, err error) {
 	if err = fd.lockAndIncref(); err != nil {
 		return 0, err
 	}
@@ -54,24 +63,38 @@ func (fd *udtFD) Write(buf []byte) (n int, err error) {
 
 	defer func() {
 		fd.fdmuW.Unlock()
-		fd.lock()
-		fd.unlockAndDecref()
+		if fd.lock() == nil {
+			fd.unlockAndDecref()
+		}
 	}()
 
-	var nn int
-	for nn, n = 0, 0; n < len(buf); n += nn {
-
-		// if getSocketStatus(fd.sock).inTeardown() {
-		// 	return n, errClosing
-		// }
-
-		nn = int(C.udt_send(fd.sock, slice2cbuf(buf[n:]), C.int(len(buf[n:])), 0))
-		if C.int(nn) == C.ERROR {
-			return n, fd.lastErrorOp("write")
+	nn = 0
+	n := 0
+	for {
+		n = int(C.udt_send(fd.sock, slice2cbuf(buf[n:]), C.int(len(buf[n:])), 0))
+		if C.int(n) == C.ERROR {
+			err = lastError()
+			break
+		}
+		if n > 0 {
+			nn += n
+		}
+		if nn == len(buf) {
+			break
+		}
+		if err != nil {
+			n = 0
+			break
+		}
+		if n == 0 {
+			err = io.ErrUnexpectedEOF
+			break
 		}
 	}
-
-	return n, nil
+	if err != nil {
+		err = &net.OpError{"write", fd.net, fd.raddr, err}
+	}
+	return nn, err
 }
 
 type socketStatus C.enum_UDTSTATUS
