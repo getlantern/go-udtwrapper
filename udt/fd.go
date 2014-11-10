@@ -93,60 +93,84 @@ func (fd *udtFD) name() string {
 	return fd.net + ":" + ls + "->" + rs
 }
 
-func socket(laddr *UDTAddr) (C.UDTSOCKET, error) {
+func socket(laddr *UDTAddr) (sock C.UDTSOCKET, reterr error) {
 	af, sa, salen, err := laddr.socketArgs()
 	if err != nil {
 		return 0, err
 	}
 
+	// lock + teardown.
 	udtLock.Lock()
-	sock := C.udt_socket(C.int(af), C.SOCK_STREAM, 0)
-	if sock == C.INVALID_SOCK {
-		err := lastError()
+	defer func() {
+		if reterr != nil && sock != C.INVALID_SOCK {
+			closeSocket(sock, true)
+			sock = C.INVALID_SOCK
+		}
 		udtLock.Unlock()
-		return 0, fmt.Errorf("invalid socket: %s", err)
+	}()
+
+	sock = C.udt_socket(C.int(af), C.SOCK_STREAM, 0)
+	if sock == C.INVALID_SOCK {
+		reterr = fmt.Errorf("invalid socket: %s", lastError())
+		return
 	}
+
+	// set options
+	trueint := C.int(1)
+	falseint := C.int(0)
 
 	// reduce maximum size
 	if C.udt_setsockopt(sock, 0, C.UDP_RCVBUF, unsafe.Pointer(&UDP_RCVBUF_SIZE), C.sizeof_int) != 0 {
-		err := lastError()
-		udtLock.Unlock()
-		return 0, fmt.Errorf("failed to set rcvbuf: %d, %s", UDP_RCVBUF_SIZE, err)
+		reterr = fmt.Errorf("failed to set UDP_RCVBUF: %d, %s", UDP_RCVBUF_SIZE, lastError())
+		return
+	}
+
+	// set sending to be async
+	if C.udt_setsockopt(sock, 0, C.UDT_SNDSYN, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
+		reterr = fmt.Errorf("failed to set UDT_SNDSYN: %s", lastError())
+		return
+	}
+
+	// set receiving to be async
+	if C.udt_setsockopt(sock, 0, C.UDT_RCVSYN, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
+		reterr = fmt.Errorf("failed to set UDT_RCVSYN: %s", lastError())
+		return
+	}
+
+	// set SO_REUSEADDR
+	if C.udt_setsockopt(sock, 0, C.SO_REUSEADDR, unsafe.Pointer(&trueint), C.sizeof_int) != 0 {
+		reterr = fmt.Errorf("failed to set SO_REUSEADDR: %s", lastError())
 	}
 
 	// cast sockaddr
 	csa := (*C.struct_sockaddr)(unsafe.Pointer(sa))
 	if C.udt_bind(sock, csa, C.int(salen)) != 0 {
-		err := lastError()
-		udtLock.Unlock()
-		return 0, fmt.Errorf("failed to bind: %s, %s", laddr, err)
+		reterr = fmt.Errorf("failed to bind: %s, %s", laddr, lastError())
+		return
 	}
-	udtLock.Unlock()
+
 	return sock, nil
 }
 
 func (fd *udtFD) listen(backlog int) error {
 	udtLock.Lock()
+	defer udtLock.Unlock()
+
 	if C.udt_listen(fd.sock, C.int(backlog)) == C.ERROR {
-		err := lastError()
-		udtLock.Unlock()
-		return fmt.Errorf("error listening: %s", err)
+		return fmt.Errorf("error listening: %s", lastError())
 	}
-	udtLock.Unlock()
 	return nil
 }
 
-// func (fd *udtFD) accept(toAddr func(syscall.Sockaddr) Addr) (netfd *udtFD, err error) {
-// 	if err := fd.readLock(); err != nil {
+// func (fd *udtFD) accept() (remotefd *udtFD, err error) {
+// 	if err := fd.lockAndIncref(); err != nil {
 // 		return nil, err
 // 	}
-// 	defer fd.readUnlock()
+// 	defer fd.unlockAndDecref()
 
 // 	var s int
 // 	var rsa syscall.Sockaddr
-// 	if err = fd.pd.PrepareRead(); err != nil {
-// 		return nil, &net.OpError{"accept", fd.net, fd.laddr, err}
-// 	}
+
 // 	for {
 // 		s, rsa, err = accept(fd.sysfd)
 // 		if err != nil {
@@ -220,7 +244,7 @@ func (fd *udtFD) connect(raddr *UDTAddr) error {
 }
 
 func (fd *udtFD) destroy() {
-	closeSocket(fd.sock)
+	closeSocket(fd.sock, false)
 	fd.sock = -1
 	runtime.SetFinalizer(fd, nil)
 }
@@ -301,9 +325,11 @@ func (fd *udtFD) Close() error {
 // 	return nil
 // }
 
-func closeSocket(sock C.UDTSOCKET) error {
-	udtLock.Lock()
-	defer udtLock.Unlock()
+func closeSocket(sock C.UDTSOCKET, locked bool) error {
+	if !locked {
+		udtLock.Lock()
+		defer udtLock.Unlock()
+	}
 
 	if C.udt_close(sock) == C.ERROR {
 		return lastError()
