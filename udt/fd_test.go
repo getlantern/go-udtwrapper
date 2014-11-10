@@ -23,11 +23,11 @@ func TestSocketClose(t *testing.T) {
 		t.Fatal("socket num invalid")
 	}
 
-	if err := closeSocket(s, false); err != nil {
+	if err := closeSocket(s); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := closeSocket(s, false); err == nil {
+	if err := closeSocket(s); err == nil {
 		t.Fatal("closing again did not produce error")
 	}
 }

@@ -37,22 +37,6 @@ func init() {
 	}
 }
 
-// udtLock is a lock on the entire udt API. WHAT!? you might say,
-// and you'd be right to scream. The udt API is not re-entrant,
-// and in particular it _sets a global error and has the user
-// fetch it with a function!!! (errno style. wtf)_
-//
-// Since we're probably paying the lovely cost of a syscall on
-// such calls this isn't sooo bad. But it's still bad.
-var udtLock polyamorous
-
-type polyamorous struct {
-	sync.Locker
-}
-
-func (*polyamorous) Lock()   {}
-func (*polyamorous) Unlock() {}
-
 // udtFD (wraps udt.socket)
 type udtFD struct {
 	fdmu   sync.Mutex
@@ -79,8 +63,6 @@ func newFD(sock C.UDTSOCKET, laddr, raddr *UDTAddr, net string) (*udtFD, error) 
 }
 
 // lastErrorOp returns the last error as a net.OpError.
-// caller should be holding udtLock, or errors may be reported
-// incorrectly...
 func (fd *udtFD) lastErrorOp(op string) *net.OpError {
 	return &net.OpError{op, fd.net, fd.laddr, lastError()}
 }
@@ -97,10 +79,6 @@ func (fd *udtFD) name() string {
 }
 
 func (fd *udtFD) setDefaultOpts() error {
-
-	// lock + teardown.
-	udtLock.Lock()
-	defer udtLock.Unlock()
 
 	// options
 	trueint := C.int(1)
@@ -127,10 +105,6 @@ func (fd *udtFD) setDefaultOpts() error {
 func (fd *udtFD) setAsyncOpts() error {
 	return fmt.Errorf("async disabled")
 
-	// lock + teardown.
-	udtLock.Lock()
-	defer udtLock.Unlock()
-
 	// options
 	falseint := C.int(0)
 
@@ -153,9 +127,6 @@ func (fd *udtFD) bind() error {
 		return err
 	}
 
-	udtLock.Lock()
-	defer udtLock.Unlock()
-
 	// cast sockaddr
 	csa := (*C.struct_sockaddr)(unsafe.Pointer(sa))
 	if C.udt_bind(fd.sock, csa, C.int(salen)) != 0 {
@@ -166,9 +137,6 @@ func (fd *udtFD) bind() error {
 }
 
 func (fd *udtFD) listen(backlog int) error {
-
-	udtLock.Lock()
-	defer udtLock.Unlock()
 
 	if C.udt_listen(fd.sock, C.int(backlog)) == C.ERROR {
 		return fd.lastErrorOp("listen")
@@ -185,24 +153,21 @@ func (fd *udtFD) accept() (*udtFD, error) {
 	var sa syscall.RawSockaddrAny
 	var salen C.int
 
-	udtLock.Lock()
 	sock2 := C.udt_accept(fd.sock, (*C.struct_sockaddr)(unsafe.Pointer(&sa)), &salen)
 	if sock2 == C.INVALID_SOCK {
 		err := fd.lastErrorOp("accept")
-		udtLock.Unlock()
 		return nil, err
 	}
-	udtLock.Unlock()
 
 	raddr, err := addrWithSockaddr(&sa)
 	if err != nil {
-		closeSocket(sock2, false)
+		closeSocket(sock2)
 		return nil, fmt.Errorf("error converting address: %s", err)
 	}
 
 	remotefd, err := newFD(sock2, fd.laddr, raddr, fd.net)
 	if err != nil {
-		closeSocket(sock2, false)
+		closeSocket(sock2)
 		return nil, err
 	}
 
@@ -222,46 +187,18 @@ func (fd *udtFD) connect(raddr *UDTAddr) error {
 	}
 	csa := (*C.struct_sockaddr)(unsafe.Pointer(sa))
 
-	udtLock.Lock()
 	if C.udt_connect(fd.sock, csa, C.int(salen)) == C.ERROR {
 		err := lastError()
-		udtLock.Unlock()
 		return fmt.Errorf("error connecting: %s", err)
 	}
 
 	fd.raddr = raddr
-	udtLock.Unlock()
 	// return fd.setAsyncOpts()
 	return nil
-
-	// for {
-	// 	// TODO: replace this with proper net waiting on a Write.
-	// 	// polling (EEEEW).
-	// 	<-time.After(time.Microsecond * 10)
-
-	// 	nerrlen := C.int(C.sizeof_int)
-	// 	nerr := C.int(0)
-
-	// 	udtLock.Lock()
-	// 	if C.udt_getsockopt(fd.sock, syscall.SOL_SOCKET, syscall.SO_ERROR, unsafe.Pointer(&nerr), &nerrlen) == C.ERROR {
-	// 		err := lastError()
-	// 		udtLock.Unlock()
-	// 		return err
-	// 	}
-	// 	udtLock.Unlock()
-
-	// 	switch err := syscall.Errno(nerr); err {
-	// 	case syscall.EINPROGRESS, syscall.EALREADY, syscall.EINTR:
-	// 	case syscall.Errno(0), syscall.EISCONN:
-	// 		return nil
-	// 	default:
-	// 		return err
-	// 	}
-	// }
 }
 
 func (fd *udtFD) destroy() {
-	closeSocket(fd.sock, false)
+	closeSocket(fd.sock)
 	fd.sock = -1
 	runtime.SetFinalizer(fd, nil)
 }
@@ -330,18 +267,6 @@ func (fd *udtFD) Close() error {
 	return nil
 }
 
-// func (fd *udtFD) shutdown(how int) error {
-// 	if err := fd.incref(); err != nil {
-// 		return err
-// 	}
-// 	defer fd.decref()
-
-// 	if err := fd.closeSocket(); err != nil {
-// 		return &net.OpError{"shutdown", fd.net, fd.laddr, err}
-// 	}
-// 	return nil
-// }
-
 // net.Conn functions
 
 func (fd *udtFD) LocalAddr() net.Addr {
@@ -365,17 +290,11 @@ func (fd *udtFD) SetWriteDeadline(t time.Time) error {
 }
 
 // lastError returns the last error as a Go string.
-// caller should be holding udtLock, or errors may be reported
-// incorrectly...
 func lastError() error {
 	return errors.New(C.GoString(C.udt_getlasterror_desc()))
 }
 
 func socket(addrfamily int) (sock C.UDTSOCKET, reterr error) {
-
-	// lock + teardown.
-	udtLock.Lock()
-	defer udtLock.Unlock()
 
 	sock = C.udt_socket(C.int(addrfamily), C.SOCK_STREAM, 0)
 	if sock == C.INVALID_SOCK {
@@ -385,12 +304,7 @@ func socket(addrfamily int) (sock C.UDTSOCKET, reterr error) {
 	return sock, nil
 }
 
-func closeSocket(sock C.UDTSOCKET, locked bool) error {
-	if !locked {
-		udtLock.Lock()
-		defer udtLock.Unlock()
-	}
-
+func closeSocket(sock C.UDTSOCKET) error {
 	if C.udt_close(sock) == C.ERROR {
 		return lastError()
 	}
@@ -415,7 +329,7 @@ func dialFD(laddr, raddr *UDTAddr) (*udtFD, error) {
 
 	fd, err := newFD(sock, laddr, raddr, "udt")
 	if err != nil {
-		closeSocket(sock, false)
+		closeSocket(sock)
 		return nil, err
 	}
 
@@ -453,7 +367,7 @@ func listenFD(laddr *UDTAddr) (*udtFD, error) {
 
 	fd, err := newFD(sock, laddr, nil, "udt")
 	if err != nil {
-		closeSocket(sock, false)
+		closeSocket(sock)
 		return nil, err
 	}
 
