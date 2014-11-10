@@ -54,8 +54,6 @@ type udtFD struct {
 
 	// immutable until Close
 	sock        C.UDTSOCKET
-	family      int
-	sotype      int
 	refcnt      int32
 	isClosing   bool
 	isConnected bool
@@ -74,26 +72,19 @@ func lastError() error {
 	return errors.New(C.GoString(C.udt_getlasterror_desc()))
 }
 
-func newFD(sock C.UDTSOCKET, family, sotype int, net string) *udtFD {
-	return &udtFD{sock: sock, family: family, sotype: sotype, net: net}
+func newFD(sock C.UDTSOCKET, laddr *UDTAddr, net string) *udtFD {
+	fd := &udtFD{sock: sock, laddr: laddr, net: net}
+	runtime.SetFinalizer(fd, (*udtFD).Close)
+	return fd
 }
 
 func (fd *udtFD) init() error {
 	return nil
 }
 
-func (fd *udtFD) LocalAddr() net.Addr {
-	return fd.laddr
-}
-
-func (fd *udtFD) RemoteAddr() net.Addr {
-	return fd.raddr
-}
-
 func (fd *udtFD) setAddr(laddr, raddr *UDTAddr) {
 	fd.laddr = laddr
 	fd.raddr = raddr
-	runtime.SetFinalizer(fd, (*udtFD).Close)
 }
 
 func (fd *udtFD) name() string {
@@ -193,7 +184,7 @@ func (fd *udtFD) lock() error {
 // Unlock for reading and remove a reference to this FD.
 func (fd *udtFD) unlock() {
 	fd.refcnt--
-	if fd.refcnt == 0 {
+	if fd.isClosing && fd.refcnt == 0 {
 		fd.destroy()
 	}
 	fd.fdmu.Unlock()
@@ -456,76 +447,13 @@ func (fd *udtFD) Write(p []byte) (nn int, err error) {
 // 	return netfd, nil
 // }
 
-// // tryDupCloexec indicates whether F_DUPFD_CLOEXEC should be used.
-// // If the kernel doesn't support it, this is set to 0.
-// var tryDupCloexec = int32(1)
+func (fd *udtFD) LocalAddr() net.Addr {
+	return fd.laddr
+}
 
-// func dupCloseOnExec(fd int) (newfd int, err error) {
-// 	if atomic.LoadInt32(&tryDupCloexec) == 1 {
-// 		r0, _, e1 := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_DUPFD_CLOEXEC, 0)
-// 		if runtime.GOOS == "darwin" && e1 == syscall.EBADF {
-// 			// On OS X 10.6 and below (but we only support
-// 			// >= 10.6), F_DUPFD_CLOEXEC is unsupported
-// 			// and fcntl there falls back (undocumented)
-// 			// to doing an ioctl instead, returning EBADF
-// 			// in this case because fd is not of the
-// 			// expected device fd type.  Treat it as
-// 			// EINVAL instead, so we fall back to the
-// 			// normal dup path.
-// 			// TODO: only do this on 10.6 if we can detect 10.6
-// 			// cheaply.
-// 			e1 = syscall.EINVAL
-// 		}
-// 		switch e1 {
-// 		case 0:
-// 			return int(r0), nil
-// 		case syscall.EINVAL:
-// 			// Old kernel. Fall back to the portable way
-// 			// from now on.
-// 			atomic.StoreInt32(&tryDupCloexec, 0)
-// 		default:
-// 			return -1, e1
-// 		}
-// 	}
-// 	return dupCloseOnExecOld(fd)
-// }
-
-// // dupCloseOnExecUnixOld is the traditional way to dup an fd and
-// // set its O_CLOEXEC bit, using two system calls.
-// func dupCloseOnExecOld(fd int) (newfd int, err error) {
-// 	syscall.ForkLock.RLock()
-// 	defer syscall.ForkLock.RUnlock()
-// 	newfd, err = syscall.Dup(fd)
-// 	if err != nil {
-// 		return -1, err
-// 	}
-// 	syscall.CloseOnExec(newfd)
-// 	return
-// }
-
-// func (fd *udtFD) dup() (f *os.File, err error) {
-// 	ns, err := dupCloseOnExec(fd.sysfd)
-// 	if err != nil {
-// 		return nil, &net.OpError{"dup", fd.net, fd.laddr, err}
-// 	}
-
-// 	// We want blocking mode for the new fd, hence the double negative.
-// 	// This also puts the old fd into blocking mode, meaning that
-// 	// I/O will block the thread instead of letting us use the epoll server.
-// 	// Everything will still work, just with more threads.
-// 	if err = syscall.SetNonblock(ns, false); err != nil {
-// 		return nil, &net.OpError{"setnonblock", fd.net, fd.laddr, err}
-// 	}
-
-// 	return os.NewFile(uintptr(ns), fd.name()), nil
-// }
-
-// func skipRawSocketTests() (skip bool, skipmsg string, err error) {
-// 	if os.Getuid() != 0 {
-// 		return true, "skipping test; must be root", nil
-// 	}
-// 	return false, "", nil
-// }
+func (fd *udtFD) RemoteAddr() net.Addr {
+	return fd.raddr
+}
 
 func (fd *udtFD) SetDeadline(t time.Time) error {
 	panic("not yet implemented")
@@ -553,11 +481,11 @@ func socket(laddr *UDTAddr) (C.UDTSOCKET, error) {
 		return 0, fmt.Errorf("invalid socket: %s", err)
 	}
 
-	// reduce maximum size 
+	// reduce maximum size
 	if C.udt_setsockopt(sock, 0, C.UDP_RCVBUF, unsafe.Pointer(&UDP_RCVBUF_SIZE), C.sizeof_int) != 0 {
 		err := lastError()
 		udtLock.Unlock()
-		return 0, fmt.Errorf("failed to set rcvbuf: %d, %s", UDP_RCVBUF_SIZE, err)		
+		return 0, fmt.Errorf("failed to set rcvbuf: %d, %s", UDP_RCVBUF_SIZE, err)
 	}
 
 	// cast sockaddr
