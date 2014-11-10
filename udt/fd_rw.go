@@ -37,11 +37,10 @@ func (fd *udtFD) Read(p []byte) (n int, err error) {
 
 	n = int(C.udt_recv(fd.sock, slice2cbuf(p), C.int(cap(p)), 0))
 	if C.int(n) == C.ERROR {
+		if getSocketStatus(fd.sock).inTeardown() {
+			return 0, io.EOF
+		}
 		return 0, fd.lastErrorOp("read")
-	}
-
-	if getSocketStatus(fd.sock).inTeardown() {
-		return n, io.EOF
 	}
 	return n, nil
 }
@@ -62,9 +61,9 @@ func (fd *udtFD) Write(buf []byte) (n int, err error) {
 	var nn int
 	for nn, n = 0, 0; n < len(buf); n += nn {
 
-		if getSocketStatus(fd.sock).inTeardown() {
-			return n, errClosing
-		}
+		// if getSocketStatus(fd.sock).inTeardown() {
+		// 	return n, errClosing
+		// }
 
 		nn = int(C.udt_send(fd.sock, slice2cbuf(buf[n:]), C.int(len(buf[n:])), 0))
 		if C.int(nn) == C.ERROR {
