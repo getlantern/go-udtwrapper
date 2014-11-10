@@ -1,7 +1,9 @@
 package udt
 
 import (
+	// "bytes"
 	"fmt"
+	"io"
 	"syscall"
 	"testing"
 )
@@ -347,6 +349,80 @@ func TestUdtDialFDAndListenFD(t *testing.T) {
 	if err := fdl.Close(); err != nil {
 		t.Fatal(err)
 	}
+
+	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
+	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
+	assert(t, fdl.Close() != nil, "closing twice should be an error")
+
+	// drain connector errs
+	for err := range cerrs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestUdtReadWrite(t *testing.T) {
+	al, err := ResolveUDTAddr("udt", "127.0.0.1:1534")
+	assert(t, nil == err, err)
+
+	cerrs := make(chan error, 10)
+	go func() {
+		fdc, err := dialFD(nil, al)
+		assert(t, nil == err, err)
+
+		n, err := io.Copy(fdc, fdc)
+		if err != nil {
+			cerrs <- err
+		}
+		fmt.Printf("echoed %d bytes\n", n)
+	}()
+
+	fdl, err := listenFD(al)
+	assert(t, nil == err, err)
+
+	connl, err := fdl.accept()
+	assert(t, nil == err, err)
+
+	// the meat of the test is here vvv
+
+	buf := make([]byte, 1024*128)
+	for i := 0; i < 128; i++ {
+
+		for j := range buf {
+			buf[j] = byte('a' + (i % 26))
+		}
+
+		fmt.Printf("sending 1024 x %d", i)
+		for n, nn := 0, 0; n < len(buf); n += nn {
+			nn, err = connl.Write(buf[n:])
+			fmt.Printf(".")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		fmt.Printf("\n")
+
+		fmt.Printf("receiving 1024 x %d ", i)
+		buf2 := make([]byte, len(buf))
+		for n, nn := 0, 0; n < len(buf); n += nn {
+			nn, err = connl.Read(buf2[n:])
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// if !bytes.Equal(buf, buf2) {
+		// 	t.Fatal("bufs differ:\n\n%s\n\n%s", buf, buf2)
+		// }
+
+		fmt.Printf("ok\n")
+	}
+
+	// the meat of the test is here ^^^
+
+	err = fdl.Close()
+	assert(t, nil == err, err)
 
 	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
 	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
