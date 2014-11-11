@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"runtime"
-	"sync"
 	"syscall"
 	"time"
 	"unsafe"
+
+	ctxgrp "github.com/jbenet/go-ctxgroup"
 )
 
 // #cgo CFLAGS: -Wall
@@ -30,11 +30,14 @@ var (
 
 	// UDT_SNDTIMEO is the udt_send() timeout in milliseconds
 	// note this doesnt change the interface, we use it as a poor polling
-	UDT_SNDTIMEO_MS = C.int(300)
+	UDT_SNDTIMEO_MS = C.int(UDT_ASYNC_TIMEOUT)
 
 	// UDT_RCVTIMEO is the udt_recv() timeout in milliseconds
 	// note this doesnt change the interface, we use it as a poor polling
-	UDT_RCVTIMEO_MS = C.int(300)
+	UDT_RCVTIMEO_MS = C.int(UDT_ASYNC_TIMEOUT)
+
+	// UDT_ASYNC_TIMEOUT (in ms)
+	UDT_ASYNC_TIMEOUT = 40
 )
 
 func init() {
@@ -48,11 +51,16 @@ func init() {
 	}
 }
 
+type signal struct{}
+type semaphore chan struct{}
+
 // udtFD (wraps udt.socket)
 type udtFD struct {
-	fdmu   sync.Mutex
-	fdmuR  sync.Mutex
-	fdmuW  sync.Mutex
+	csema semaphore
+	rsema semaphore
+	wsema semaphore
+	proc  ctxgrp.ContextGroup
+
 	refcnt int32
 	bound  bool
 
@@ -69,8 +77,40 @@ func newFD(sock C.UDTSOCKET, laddr, raddr *UDTAddr, net string) (*udtFD, error) 
 	lac := laddr.copy()
 	rac := raddr.copy()
 	fd := &udtFD{sock: sock, laddr: lac, raddr: rac, net: net}
+
+	// sync managing.
+	fd.csema = make(semaphore, 1)
+	fd.rsema = make(semaphore, 1)
+	fd.wsema = make(semaphore, 1)
+	fd.csema <- signal{}
+	fd.rsema <- signal{}
+	fd.wsema <- signal{}
+	fd.proc = ctxgrp.WithTeardown(fd.teardown)
+	fd.proc.AddChildFunc(fd.connectionCheck)
 	runtime.SetFinalizer(fd, (*udtFD).Close)
 	return fd, nil
+}
+
+func (fd *udtFD) connectionCheck(ctxgrp.ContextGroup) {
+
+	for {
+		select {
+		case <-fd.proc.Closing():
+			<-time.After(500 * time.Millisecond) // wait for flushing to happen (TODO)
+			<-fd.csema                           // take it forever.
+			go closeSocket(fd.sock)
+			return
+
+		// check for connection death
+		case <-time.After(time.Duration(UDT_ASYNC_TIMEOUT) * time.Millisecond):
+			if getSocketStatus(fd.sock).inTeardown() {
+				<-time.After(500 * time.Millisecond) // wait for flushing to happen (TODO)
+				<-fd.csema                           // take it forever.
+				go fd.Close()
+				return
+			}
+		}
+	}
 }
 
 // lastErrorOp returns the last error as a net.OpError.
@@ -108,6 +148,11 @@ func (fd *udtFD) setDefaultOpts() error {
 	// 	return fmt.Errorf("failed to set UDT_LINGER: %s", lastError())
 	// }
 
+	return nil
+}
+
+func (fd *udtFD) setAsyncOpts() error {
+
 	if C.udt_setsockopt(fd.sock, 0, C.UDT_RCVTIMEO, unsafe.Pointer(&UDT_RCVTIMEO_MS), C.sizeof_int) != 0 {
 		return fmt.Errorf("failed to set UDT_RCVTIMEO: %s", lastError())
 	}
@@ -116,24 +161,20 @@ func (fd *udtFD) setDefaultOpts() error {
 		return fmt.Errorf("failed to set UDT_SNDTIMEO: %s", lastError())
 	}
 
-	return nil
-}
-
-func (fd *udtFD) setAsyncOpts() error {
-	return fmt.Errorf("async disabled")
+	// full async is off
 
 	// options
-	falseint := C.int(0)
+	// falseint := C.int(0)
 
-	// set sending to be async
-	if C.udt_setsockopt(fd.sock, 0, C.UDT_SNDSYN, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
-		return fmt.Errorf("failed to set UDT_SNDSYN: %s", lastError())
-	}
+	// // set sending to be async
+	// if C.udt_setsockopt(fd.sock, 0, C.UDT_SNDSYN, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
+	// 	return fmt.Errorf("failed to set UDT_SNDSYN: %s", lastError())
+	// }
 
-	// set receiving to be async
-	if C.udt_setsockopt(fd.sock, 0, C.UDT_RCVSYN, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
-		return fmt.Errorf("failed to set UDT_RCVSYN: %s", lastError())
-	}
+	// // set receiving to be async
+	// if C.udt_setsockopt(fd.sock, 0, C.UDT_RCVSYN, unsafe.Pointer(&falseint), C.sizeof_int) != 0 {
+	// 	return fmt.Errorf("failed to set UDT_RCVSYN: %s", lastError())
+	// }
 
 	return nil
 }
@@ -162,10 +203,10 @@ func (fd *udtFD) listen(backlog int) error {
 }
 
 func (fd *udtFD) accept() (*udtFD, error) {
-	if err := fd.lockAndIncref(); err != nil {
+	if err := fd.incref(); err != nil {
 		return nil, err
 	}
-	defer fd.unlockAndDecref()
+	defer fd.decref()
 
 	var sa syscall.RawSockaddrAny
 	var salen C.int
@@ -188,15 +229,19 @@ func (fd *udtFD) accept() (*udtFD, error) {
 		return nil, err
 	}
 
-	// if err = remotefd.setAsyncOpts(); err != nil {
-	// 	remotefd.Close()
-	// 	return nil, err
-	// }
+	if err = remotefd.setAsyncOpts(); err != nil {
+		remotefd.Close()
+		return nil, err
+	}
 
 	return remotefd, nil
 }
 
 func (fd *udtFD) connect(raddr *UDTAddr) error {
+	if err := fd.incref(); err != nil {
+		return err
+	}
+	defer fd.decref()
 
 	_, sa, salen, err := raddr.socketArgs()
 	if err != nil {
@@ -210,81 +255,17 @@ func (fd *udtFD) connect(raddr *UDTAddr) error {
 	}
 
 	fd.raddr = raddr
-	// return fd.setAsyncOpts()
-	return nil
-}
-
-func (fd *udtFD) destroy() {
-	closeSocket(fd.sock)
-	fd.sock = -1
-	runtime.SetFinalizer(fd, nil)
-}
-
-// Add a reference to this fd.
-// Returns an error if the fd cannot be used.
-func (fd *udtFD) incref() {
-	fd.refcnt++
-}
-
-// Remove a reference to this FD and close if we've been asked to do so
-// (and there are no references left).
-func (fd *udtFD) decref() {
-	fd.refcnt--
-	if fd.isClosing() && fd.refcnt == 0 {
-		fd.destroy()
-	}
-}
-
-// Lock
-// Returns an error if the fd cannot be used.
-func (fd *udtFD) lock() error {
-	fd.fdmu.Lock()
-	if fd.isClosing() {
-		fd.fdmu.Unlock()
-		return errClosing
-	}
-	return nil
-}
-
-// Unlock
-func (fd *udtFD) unlock() {
-	fd.fdmu.Unlock()
-}
-
-// Locks, and adds a reference to this fd
-// Returns an error if the fd cannot be used.
-func (fd *udtFD) lockAndIncref() error {
-	if err := fd.lock(); err != nil {
-		return err
-	}
-	fd.incref()
-	return nil
-}
-
-// Removes a reference and unlocks
-func (fd *udtFD) unlockAndDecref() {
-	fd.decref()
-	fd.unlock()
-}
-
-func (fd *udtFD) isClosing() bool {
-	return fd.localClose || getSocketStatus(fd.sock).inTeardown()
+	return fd.setAsyncOpts()
 }
 
 func (fd *udtFD) Close() error {
-	if err := fd.lockAndIncref(); err != nil {
-		return err
-	}
+	return fd.proc.Close()
+}
 
-	// Unblock any I/O.  Once it all unblocks and returns,
-	// so that it cannot be referring to fd.sysfd anymore,
-	// the final decref will close fd.sysfd.  This should happen
-	// fairly quickly, since all the I/O is non-blocking, and any
-	// attempts to block in the pollDesc will return errClosing.
-
-	// TODO
-	fd.localClose = true
-	fd.unlockAndDecref()
+func (fd *udtFD) teardown() error {
+	closeSocket(fd.sock)
+	fd.sock = -1
+	runtime.SetFinalizer(fd, nil)
 	return nil
 }
 

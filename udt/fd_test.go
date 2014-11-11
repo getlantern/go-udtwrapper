@@ -7,6 +7,7 @@ import (
 	"net"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestSocketConstruct(t *testing.T) {
@@ -62,10 +63,6 @@ func TestUdtFDConstruct(t *testing.T) {
 	if int(fd.sock) != -1 {
 		t.Fatal("sock should now be -1")
 	}
-
-	if err := fd.Close(); err == nil {
-		t.Fatal("closing twice should be an error")
-	}
 }
 
 func TestUdtFDLocking(t *testing.T) {
@@ -78,51 +75,31 @@ func TestUdtFDLocking(t *testing.T) {
 	err = fd.setDefaultOpts()
 	assert(t, nil == err, err)
 
-	if err := fd.lockAndIncref(); err != nil {
-		t.Fatal(err)
-	}
+	fd.proc.Children().Add(1)
+	done := make(semaphore, 1)
 
-	if fd.refcnt != 1 {
-		t.Fatal("fd.refcnt != 1", fd.refcnt)
-	}
+	go func() {
+		if err := fd.Close(); err != nil {
+			t.Fatal(err)
+		}
+		done <- signal{}
+	}()
 
-	fd.unlockAndDecref()
-
-	if fd.refcnt != 0 {
-		t.Fatal("fd.refcnt != 0", fd.refcnt)
-	}
-
-	fd.incref()
-	fd.incref()
-	fd.incref()
-
-	if fd.refcnt != 3 {
-		t.Fatal("fd.refcnt != 3", fd.refcnt)
-	}
-
-	if err := fd.Close(); err != nil {
-		t.Fatal(err)
+	select {
+	case <-done:
+		t.Fatal("sock should not have happened yet")
+	default:
 	}
 
 	if int(fd.sock) == -1 {
 		t.Fatal("sock should not yet be -1")
 	}
 
-	fd.decref()
-	fd.decref()
-
-	if fd.refcnt != 1 {
-		t.Fatal("fd.refcnt != 1", fd.refcnt)
-	}
-
-	if err := fd.Close(); err == nil {
-		t.Fatal("closing twice should still be an error")
-	}
-
-	fd.decref()
-
-	if fd.refcnt != 0 {
-		t.Fatal("fd.refcnt != 0", fd.refcnt)
+	fd.proc.Children().Done()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("sock should have happened now")
 	}
 
 	if int(fd.sock) != -1 {
@@ -157,7 +134,6 @@ func TestUdtFDListenOnly(t *testing.T) {
 	}
 
 	assert(t, fd.sock == -1, "sock should now be -1", fd.sock)
-	assert(t, fd.Close() != nil, "closing twice should be an error")
 }
 
 func TestUdtFDAcceptAndConnect(t *testing.T) {
@@ -201,7 +177,6 @@ func TestUdtFDAcceptAndConnect(t *testing.T) {
 		}
 
 		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
-		assert(t, fdc.Close() != nil, "closing twice should be an error")
 	}()
 
 	connl, err := fdl.accept()
@@ -219,7 +194,6 @@ func TestUdtFDAcceptAndConnect(t *testing.T) {
 
 	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
 	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
-	assert(t, fdl.Close() != nil, "closing twice should be an error")
 
 	// drain connector errs
 	for err := range cerrs {
@@ -265,7 +239,6 @@ func TestUdtFDAcceptAndDialFD(t *testing.T) {
 		}
 
 		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
-		assert(t, fdc.Close() != nil, "closing twice should be an error")
 	}()
 
 	connl, err := fdl.accept()
@@ -283,7 +256,6 @@ func TestUdtFDAcceptAndDialFD(t *testing.T) {
 
 	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
 	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
-	assert(t, fdl.Close() != nil, "closing twice should be an error")
 
 	// drain connector errs
 	for err := range cerrs {
@@ -317,7 +289,6 @@ func TestUdtDialFDAndListenFD(t *testing.T) {
 		}
 
 		assert(t, fdc.sock == -1, "sock should now be -1", fdc.sock)
-		assert(t, fdc.Close() != nil, "closing twice should be an error")
 	}()
 
 	fdl, err := listenFD(al)
@@ -343,7 +314,6 @@ func TestUdtDialFDAndListenFD(t *testing.T) {
 
 	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
 	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
-	assert(t, fdl.Close() != nil, "closing twice should be an error")
 
 	// drain connector errs
 	for err := range cerrs {
@@ -386,7 +356,6 @@ func TestUdtReadWrite(t *testing.T) {
 
 	assert(t, fdl.listen(10) != nil, "should not be able to listen after closing")
 	assert(t, fdl.sock == -1, "sock should now be -1", fdl.sock)
-	assert(t, fdl.Close() != nil, "closing twice should be an error")
 
 	fmt.Printf("closed and waiting\n")
 	// drain connector errs

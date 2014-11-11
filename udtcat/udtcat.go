@@ -82,6 +82,14 @@ func main() {
 	args := parseArgs()
 	verbose = args.verbose
 
+	go func() {
+		// wait until we exit.
+		sigc := make(chan os.Signal, 1)
+		signal.Notify(sigc, syscall.SIGABRT)
+		<-sigc
+		panic("ABORT! ABORT! ABORT!")
+	}()
+
 	var err error
 	if args.listen {
 		err = Listen(args.localAddr)
@@ -163,7 +171,7 @@ func Dial(localAddr, remoteAddr string) error {
 func netcat(c net.Conn) {
 	log("piping stdio to connection")
 
-	done := make(chan struct{})
+	done := make(chan struct{}, 2)
 
 	go func() {
 		n, _ := io.Copy(c, os.Stdin)
@@ -180,8 +188,12 @@ func netcat(c net.Conn) {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGHUP, syscall.SIGINT,
 		syscall.SIGTERM, syscall.SIGQUIT)
+
 	select {
 	case <-done:
 	case <-sigc:
+		return
 	}
+
+	c.Close()
 }

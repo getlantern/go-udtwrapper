@@ -22,39 +22,88 @@ func slice2cbuf(buf []byte) *C.char {
 // udtIOError interprets the udt_getlasterror_code and returns an
 // error if IO systems should stop.
 func (fd *udtFD) udtIOError() error {
-	switch C.udt_getlasterror_code() {
-	case C.UDT_ECONNFAIL, C.UDT_ECONNLOST: // connection closed
-	case C.UDT_EASYNCRCV, C.UDT_EASYNCSND: // no data to read (async)
-	case C.UDT_ETIMEOUT: // timeout that we triggered
-	default: // unexpected error, bail
-		return lastError()
-	}
+	// switch C.udt_getlasterror_code() {
+	// case C.UDT_SUCCESS: // success :)
+	// case C.UDT_ECONNFAIL, C.UDT_ECONNLOST: // connection closed
+	// case C.UDT_EASYNCRCV, C.UDT_EASYNCSND: // no data to read (async)
+	// case C.UDT_ETIMEOUT: // timeout that we triggered
+	// default: // unexpected error, bail
+	//  return lastError()
+	// }
 
 	// timeout and/or closing.
-	if fd.isClosing() {
-		if getSocketStatus(fd.sock).inTeardown() {
-			return io.EOF // it seems to have been a graceful shutdown
-		}
-		return errClosing
-	}
 
-	// everything seems fine. proceed.
+	// TODO remove this and turn async off. This timeout is here because I'm seeing
+	// unexpected blocking (violating the timeout). Its not clear how the UDT async
+	// stuff and Goroutines mesh... this worked.
+	// UPDATE: async disabled for now.
+	select {
+	// case <-time.After(time.Duration(UDT_ASYNC_TIMEOUT) * time.Millisecond):
+	case <-fd.proc.Closing():
+		return io.EOF // seems to have been a graceful close
+	default:
+	}
 	return nil
 }
 
+func (fd *udtFD) incref() error {
+	select {
+	case <-fd.proc.Closing():
+		return errClosing
+	case <-fd.csema:
+		fd.proc.Children().Add(1)
+		fd.csema <- signal{}
+		return nil
+	}
+}
+
+func (fd *udtFD) decref() {
+	fd.proc.Children().Done()
+}
+
+func (fd *udtFD) readLock() error {
+	// first acquire control sema to add ourselves as a child
+	if err := fd.incref(); err != nil {
+		return err
+	}
+
+	// second acquire read sema (one reader at a time)
+	select {
+	case <-fd.proc.Closing():
+		fd.decref() // didnt work out. undo
+		return errClosing
+	case <-fd.rsema:
+		return nil
+	}
+}
+
+func (fd *udtFD) readUnlock() {
+	fd.decref()
+	fd.rsema <- signal{}
+}
+
+func (fd *udtFD) writeLock() error {
+	select {
+	case <-fd.proc.Closing():
+		return errClosing
+	case <-fd.csema:
+		<-fd.wsema
+		fd.proc.Children().Add(1)
+		fd.csema <- signal{}
+		return nil
+	}
+}
+
+func (fd *udtFD) writeUnlock() {
+	fd.proc.Children().Done()
+	fd.wsema <- signal{}
+}
+
 func (fd *udtFD) Read(buf []byte) (readcnt int, err error) {
-	if err = fd.lockAndIncref(); err != nil {
+	if err = fd.readLock(); err != nil {
 		return 0, err
 	}
-	fd.fdmuR.Lock()
-	fd.unlock()
-
-	defer func() {
-		fd.fdmuR.Unlock()
-		if fd.lock() == nil {
-			fd.unlockAndDecref()
-		}
-	}()
+	defer fd.readUnlock()
 
 	readcnt = 0
 	for {
@@ -86,18 +135,10 @@ func (fd *udtFD) Read(buf []byte) (readcnt int, err error) {
 }
 
 func (fd *udtFD) Write(buf []byte) (writecnt int, err error) {
-	if err = fd.lockAndIncref(); err != nil {
+	if err = fd.writeLock(); err != nil {
 		return 0, err
 	}
-	fd.fdmuW.Lock()
-	fd.unlock()
-
-	defer func() {
-		fd.fdmuW.Unlock()
-		if fd.lock() == nil {
-			fd.unlockAndDecref()
-		}
-	}()
+	defer fd.writeUnlock()
 
 	writecnt = 0
 	for {
@@ -149,7 +190,7 @@ func (s socketStatus) inSetup() bool {
 
 func (s socketStatus) inTeardown() bool {
 	switch C.enum_UDTSTATUS(s) {
-	case C.BROKEN, C.CLOSING, C.CLOSED, C.NONEXIST:
+	case C.BROKEN, C.CLOSED, C.NONEXIST: // c.CLOSING
 		return true
 	}
 	return false

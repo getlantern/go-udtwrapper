@@ -33,7 +33,6 @@ func TestListenOnly(t *testing.T) {
 
 	_, err = l.Accept()
 	assert(t, err != nil, "should not be able to accept after closing")
-	assert(t, l.Close() != nil, "closing twice should be an error")
 }
 
 func TestListenAndDial(t *testing.T) {
@@ -56,7 +55,6 @@ func TestListenAndDial(t *testing.T) {
 		}
 
 		cerrs <- c1.Close()
-		assert(t, c1.Close() != nil, "closing twice should be an error")
 	}()
 
 	c2, err := l.Accept()
@@ -77,7 +75,6 @@ func TestListenAndDial(t *testing.T) {
 
 	_, err = l.Accept()
 	assert(t, err != nil, "should not be able to accept after closing")
-	assert(t, l.Close() != nil, "closing twice should be an error")
 
 	// drain connector errs
 	for err := range cerrs {
@@ -102,6 +99,9 @@ func TestConnReadWrite(t *testing.T) {
 		if err != nil {
 			cerrs <- err
 		}
+
+		err = c2.Close()
+		assert(t, err == nil, err)
 	}()
 
 	l, err := Listen("udt", al.String())
@@ -120,8 +120,6 @@ func TestConnReadWrite(t *testing.T) {
 
 	_, err = l.Accept()
 	assert(t, err != nil, "should not be able to listen after closing")
-	assert(t, l.Close() != nil, "closing twice should be an error")
-	assert(t, c1.Close() != nil, "closing twice should be an error")
 
 	fmt.Printf("closed and waiting\n")
 	// drain connector errs
