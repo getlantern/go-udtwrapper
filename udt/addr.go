@@ -78,6 +78,10 @@ func ResolveUDTAddr(n, addr string) (*UDTAddr, error) {
 	return &UDTAddr{addr: udp}, nil
 }
 
+func WrapUDPAddr(ua *net.UDPAddr) *UDTAddr {
+	return &UDTAddr{addr: ua}
+}
+
 // sockArgs returns (AF, *RawSockaddrAny, error)
 func (a *UDTAddr) socketArgs() (int, *syscall.RawSockaddrAny, sockaddr.Socklen, error) {
 	af := a.AF()
