@@ -35,12 +35,12 @@ DIR = $(shell pwd)
 
 all: libudt.so libudt.a udt
 
-%.o: %.cpp %.h %.cxx udt.h
+%.o: %.cpp %.h udt.h
 	$(C++) $(CCFLAGS) $< -c
 
 libudt.so: $(OBJS)
 ifneq ($(os), OSX)
-	$(C++) -shared -o $@ $^ -undefined suppress -flat_namespacem
+	$(C++) -static -o $@ $^ 
 else
 	$(C++) -dynamiclib -o libudt.dylib -lstdc++ -lpthread -lm $^ -undefined suppress -flat_namespace
 endif
