@@ -11,6 +11,7 @@ func maxRcvBufSize() (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer fi.Close()
 
 	val, err := ioutil.ReadAll(fi)
 	if err != nil {
