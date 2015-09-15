@@ -1,6 +1,7 @@
 // udt_c.h declares symbols for UDT as they are used from a C program
 
 #include "udt_base.h"
+#include "udt_errors.h"
 
 // For some reason the name htons isn't addressable in Go, so we have a function
 // that wraps htons and is called _htons, which makes Go happy.
